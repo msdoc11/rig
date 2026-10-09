@@ -1,0 +1,24 @@
+# rig: хаб событий с сервера (broadcast) для продакшена.
+# Нужен, только если в config.php 'hub' не false.
+#   sudo cp deploy/rig-push.service /etc/systemd/system/rig-push.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rig-push
+#   journalctl -u rig-push -f        # лог: подключения вкладок и разосланные события
+
+[Unit]
+Description=rig push hub (SSE)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/example.com
+Environment=RIG_ENV=production
+ExecStart=/usr/bin/php /var/www/example.com/rig/cli.php push
+Restart=always
+RestartSec=2
+# хаб читает storage/push.log и storage/app.key, поэтому работает от того же пользователя, что и PHP-FPM
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

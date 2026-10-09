@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 128" width="256" height="128" role="img" aria-label="rig">
+  <rect x="0" y="26" width="76" height="76" rx="14" fill="#1C211E"/>
+  <circle cx="54" cy="48" r="10" fill="#FFB703"/>
+  <g fill="#1A1E1C">
+    <path d="M104 96V44h40l10 10v12h-16v-6h-18v36z"/>
+    <path d="M166 44h16v52h-16z"/>
+    <path fill-rule="evenodd" d="M204 44H246V112L238 120H196V104H230V96H204L196 88V52ZM212 60V80H230V60Z"/>
+    <path d="M166 24h16v14h-16z"/>
+  </g>
+</svg>

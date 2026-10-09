@@ -1,0 +1,3 @@
+# rig: планировщик (app/schedule.php), раз в минуту выполняет задачи, которым пора.
+#   sudo cp deploy/rig-schedule.cron /etc/cron.d/rig-schedule
+* * * * * www-data cd /var/www/example.com && RIG_ENV=production /usr/bin/php rig/cli.php schedule:run >> storage/logs/schedule.log 2>&1

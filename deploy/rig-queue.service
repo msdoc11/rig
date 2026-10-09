@@ -1,0 +1,23 @@
+# rig: обработчик очереди задач (Queue::push, письма ->queue()) для продакшена.
+#   sudo cp deploy/rig-queue.service /etc/systemd/system/rig-queue.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rig-queue
+#   journalctl -u rig-queue -f       # лог: выполненные и упавшие задачи
+# Несколько обработчиков: скопируйте как rig-queue@.service и запустите rig-queue@1, rig-queue@2.
+
+[Unit]
+Description=rig queue worker
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/example.com
+Environment=RIG_ENV=production
+ExecStart=/usr/bin/php /var/www/example.com/rig/cli.php queue:work
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

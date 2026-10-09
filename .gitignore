@@ -1,0 +1,19 @@
+/.env
+/dist/
+/storage/*
+!/storage/.gitkeep
+/.playwright-mcp/
+
+# сайт rig.local: лендинг и его компоненты в репозиторий не входят
+/app/landing/
+/app/components/HeroDemo.php
+/app/components/CopyCommand.php
+
+# локальные материалы и настройки
+/articles/
+/docs/
+/ROADMAP.md
+/public/img/
+/public/uploads/
+/.osp/
+/.claude/
