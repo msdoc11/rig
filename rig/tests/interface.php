@@ -191,6 +191,47 @@ check('пустое значение — без подписки', array_column(
 exec('node ' . escapeshellarg(__DIR__ . '/events.test.cjs') . ' 2>&1', $lines2, $code2);
 check('rig.js: события с параметрами и r-model через computed-список', $code2 === 0, implode("\n", $lines2));
 
+// --- генераторы rig make:*
+$made = Rig\Make::component('Admin/UserCard');
+check('make:component: файл в подпапке', str_ends_with(str_replace('\\', '/', $made), 'app/components/Admin/UserCard.php'));
+ob_start();
+require $made;
+ob_end_clean();
+try {
+    $def = (new Rig\Compiler\Compiler("{$tmp}/cache"))->load('Admin\\UserCard');
+    check('make:component: заготовка компилируется', isset($def['actions']['increment']) && $def['server'] === ['count'], $def['server'] ?? null);
+} catch (Throwable $e) {
+    check('make:component: заготовка компилируется', false, $e->getMessage());
+}
+check('make:component: существующий не перезаписывается', (function () {
+    try {
+        Rig\Make::component('Admin/UserCard');
+    } catch (RuntimeException $e) {
+        return str_contains($e->getMessage(), 'уже есть');
+    }
+    return false;
+})());
+check('make:component: неверное имя — ошибка', (function () {
+    try {
+        Rig\Make::component('user-card');
+    } catch (RuntimeException) {
+        return true;
+    }
+    return false;
+})());
+$page = Rig\Make::page('blog/[slug]');
+check('make:page с параметром', str_contains((string)file_get_contents($page), "\$params['slug']") && str_ends_with(str_replace('\\', '/', $page), 'pages/blog/[slug].php'));
+$page = Rig\Make::page('about-us');
+check('make:page: заголовок из адреса', str_contains((string)file_get_contents($page), "\$title = 'About us';"), file_get_contents($page));
+foreach ([$made, $page] as $f) {
+    exec(escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($f) . ' 2>&1', $lint, $lintCode);
+    check('make: без синтаксических ошибок ' . basename($f), $lintCode === 0, implode("\n", $lint));
+}
+$model = Rig\Make::model('Category');
+check('make:model: таблица в комментарии', str_contains((string)file_get_contents($model), 'categories'));
+check('Model::tableFor', Rig\Db\Model::tableFor('Order') === 'orders' && Rig\Db\Model::tableFor('TodoList') === 'todo_lists'
+    && Rig\Db\Model::tableFor('Box') === 'boxes' && Rig\Db\Model::tableFor('Category') === 'categories');
+
 // уборка
 $rm = static function (string $d) use (&$rm): void {
     foreach (glob($d . '/{,.}[!.,!..]*', GLOB_BRACE) ?: [] as $f) {

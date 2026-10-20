@@ -87,8 +87,14 @@
 Composer, Node и отдельный веб-сервер не нужны.
 
 ```bash
-rig dev
+git clone https://github.com/msdoc11/rig.git
+cd rig
+php rig/cli.php dev
 ```
+
+При первом запуске `rig dev` создаёт `.env` из `.env.example`. По умолчанию там своя база PostgreSQL проекта:
+`rig dev` создаёт её в `storage/postgres` и запускает сам, если PostgreSQL установлен. Программы PostgreSQL rig ищет в PATH
+и в обычных местах установки. Если не найдёт, укажите папку в `.env`: `PG_BIN=/usr/lib/postgresql/16/bin`.
 
 Глобальную команду достаточно установить один раз. После этого `rig` работает в любом терминале и в любом проекте rig
 (команда ищет `rig/cli.php` в текущей папке и выше):
@@ -155,6 +161,9 @@ rig dev
 | `rig check` | проверить окружение и все компоненты, прогнать тесты |
 | `rig build` | подготовка к выкладке: компиляция, таблица размеров, проверка настроек |
 | `rig push` | хаб событий для продакшена |
+| `rig make:component Counter` | заготовка компонента, можно с подпапкой: `Admin/UserCard` |
+| `rig make:page about` | заготовка страницы, можно с параметром: `blog/[slug]` |
+| `rig make:model Order` | заготовка модели; с `--migration` заодно миграция таблицы `orders` |
 | `rig help` | список команд |
 
 ## Компонент
@@ -636,3 +645,7 @@ php rig/tests/run.php
 Каждое выражение из `rig/tests/expr.json` вычисляется в PHP и в JS. Сверяются и значение, и то,
 как оно выводится в HTML. Все наборы тестов (выражения, блоки компонентов, бэкенд на SQLite и PostgreSQL, интерфейс)
 прогоняет `rig check`.
+
+## Лицензия
+
+MIT, текст в файле [LICENSE](LICENSE).

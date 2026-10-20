@@ -9,7 +9,8 @@ namespace Rig;
  * Данные в storage/postgres, отдельный порт, без общих баз и ручной установки.
  *
  * Включается в .env:  DB_CONNECTION=pgsql  и  DB_MANAGED=true.
- * Программы PostgreSQL берутся из PG_BIN (папка с pg_ctl), иначе ищутся в PATH, OSPanel и Program Files.
+ * Программы PostgreSQL берутся из PG_BIN (папка с pg_ctl), иначе ищутся в PATH и в обычных местах установки:
+ * OSPanel и Program Files на Windows, /usr/lib/postgresql и /usr/pgsql-* на Linux, Homebrew и Postgres.app на macOS.
  * На продакшене DB_MANAGED=false, база живёт на вашем сервере PostgreSQL.
  */
 final class Postgres
@@ -73,7 +74,15 @@ final class Postgres
                 $candidates[] = $dir;
             }
         } else {
-            array_push($candidates, ...(glob('/usr/lib/postgresql/*/bin') ?: []), ...['/usr/local/bin', '/opt/homebrew/bin']);
+            // Debian и Ubuntu, RHEL и Fedora, Homebrew (в том числе postgresql@16 вне PATH), Postgres.app
+            foreach ([
+                '/usr/lib/postgresql/*/bin', '/usr/pgsql-*/bin',
+                '/opt/homebrew/opt/postgresql*/bin', '/usr/local/opt/postgresql*/bin',
+                '/Applications/Postgres.app/Contents/Versions/*/bin',
+            ] as $pattern) {
+                array_push($candidates, ...(glob($pattern) ?: []));
+            }
+            array_push($candidates, '/usr/local/bin', '/opt/homebrew/bin');
         }
         $found = [];
         foreach ($candidates as $dir) {
@@ -83,7 +92,8 @@ final class Postgres
             }
         }
         if (!$found) {
-            throw new \RuntimeException('Не найден PostgreSQL (pg_ctl и initdb). Укажите папку в .env: PG_BIN=D:/OSPanel/modules/PostgreSQL-18/bin');
+            $example = PHP_OS_FAMILY === 'Windows' ? 'D:/OSPanel/modules/PostgreSQL-18/bin' : '/usr/lib/postgresql/16/bin';
+            throw new \RuntimeException("Не найден PostgreSQL (pg_ctl и initdb). Установите его или укажите папку в .env: PG_BIN={$example}");
         }
         if ($env === null || $env === '') {
             // из найденных берём самую новую версию

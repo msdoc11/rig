@@ -18,6 +18,8 @@ final class Cli
     private bool $verbose = false;
     /** Вывод без оформления для процессов, которые запускает rig dev (очередь, планировщик). */
     private bool $plain = false;
+    /** rig dev создал .env из .env.example при этом запуске. */
+    private bool $envCreated = false;
 
     public function __construct(private readonly string $root)
     {
@@ -31,6 +33,8 @@ final class Cli
         $args = array_values(array_filter(array_slice($argv, 2), static fn (string $a) => !str_starts_with($a, '--')));
         $this->verbose = isset($opts['verbose']);
         $this->plain = isset($opts['plain']);
+        // первый запуск свежего клона: настройки из образца, до чтения config.php
+        $this->envCreated = $cmd === 'dev' && $this->createEnv();
         Config::init($this->root, is_file("{$this->root}/config.php") ? (array)require "{$this->root}/config.php" : []);
         try {
             return match ($cmd) {
@@ -46,6 +50,9 @@ final class Cli
                 'migrate:rollback' => $this->rollback($opts),
                 'migrate:status' => $this->migrateStatus(),
                 'make:migration' => $this->makeMigration($args),
+                'make:component' => $this->made('make:component', [Make::component($this->arg($args, 'rig make:component Counter'))]),
+                'make:page' => $this->made('make:page', [Make::page($this->arg($args, 'rig make:page about'))]),
+                'make:model' => $this->makeModel($args, $opts),
                 'db:seed' => $this->seed($opts),
                 'db:start' => $this->dbStart(),
                 'db:stop' => $this->dbStop(),
@@ -103,6 +110,11 @@ final class Cli
         $cmd('rig db:start', 'запустить PostgreSQL проекта (rig dev делает это сам)');
         $cmd('rig db:stop', 'остановить PostgreSQL проекта');
         $o->line();
+        $o->line('  ' . $o->bold('Заготовки'));
+        $cmd('rig make:component', 'компонент: rig make:component Counter или Admin/UserCard');
+        $cmd('rig make:page', 'страница: rig make:page about или blog/[slug]');
+        $cmd('rig make:model', 'модель: rig make:model Order   ' . $o->dim('--migration: заодно миграция таблицы'));
+        $o->line();
         $o->line('  ' . $o->bold('Фоновые задачи'));
         $cmd('rig queue:work', 'обработчик очереди   ' . $o->dim('--once, --queue=имя'));
         $cmd('rig queue:failed', 'проваленные задачи');
@@ -132,6 +144,9 @@ final class Cli
         $bind = isset($opts['host']) ? '0.0.0.0' : '127.0.0.1';
 
         $o->task('Окружение', fn () => $this->environment());
+        if ($this->envCreated) {
+            $o->task('Настройки', fn () => '(.env создан из .env.example)');
+        }
         $pg = Postgres::managed() ? Postgres::fromConfig() : null;
         if ($pg !== null) {
             $o->task('База данных', fn () => 'PostgreSQL ' . $pg->version() . ' · порт ' . $pg->port() . ' · ' . $pg->start());
@@ -276,6 +291,33 @@ final class Cli
         $file = Db\Migrator::make($name);
         $this->out->header('make:migration');
         $this->out->ok('создана ' . str_replace('\\', '/', substr($file, strlen($this->root) + 1)));
+        $this->out->line();
+        return 0;
+    }
+
+    private function makeModel(array $args, array $opts): int
+    {
+        $name = $this->arg($args, 'rig make:model Order');
+        $files = [Make::model($name)];
+        if (isset($opts['migration'])) {
+            $files[] = Db\Migrator::make('create_' . Db\Model::tableFor($name) . '_table');
+        }
+        return $this->made('make:model', $files);
+    }
+
+    /** Первый аргумент команды или ошибка с примером. */
+    private function arg(array $args, string $example): string
+    {
+        return (string)($args[0] ?? throw new \RuntimeException("Укажите имя: {$example}"));
+    }
+
+    /** Вывод генератора: какие файлы созданы. */
+    private function made(string $title, array $files): int
+    {
+        $this->out->header($title);
+        foreach ($files as $file) {
+            $this->out->ok('создан ' . str_replace('\\', '/', substr($file, strlen($this->root) + 1)));
+        }
         $this->out->line();
         return 0;
     }
@@ -879,6 +921,18 @@ final class Cli
 
     // ---------------------------------------------------------------- шаги
 
+    /** Нет .env, но есть образец: скопировать и прочитать, чтобы config.php увидел значения. */
+    private function createEnv(): bool
+    {
+        $env = "{$this->root}/.env";
+        $example = "{$this->root}/.env.example";
+        if (is_file($env) || !is_file($example) || !@copy($example, $env)) {
+            return false;
+        }
+        Env::load($env);
+        return true;
+    }
+
     /** PHP, расширения, storage, ключ. */
     private function environment(): string
     {
@@ -909,9 +963,19 @@ final class Cli
         $errors = [];
         $this->out->task($label, function () use (&$errors): string {
             $app = new App($this->root, ['debug' => true]);
-            $all = glob("{$this->root}/app/components/*.php") ?: [];
+            // вместе с подпапками: app/components/Shop/ProductCard.php это компонент Shop\ProductCard
+            $base = "{$this->root}/app/components";
+            $all = [];
+            if (is_dir($base)) {
+                foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)) as $f) {
+                    if ($f->isFile() && $f->getExtension() === 'php') {
+                        $all[] = str_replace('\\', '/', $f->getPathname());
+                    }
+                }
+                sort($all);
+            }
             foreach ($all as $file) {
-                $name = basename($file, '.php');
+                $name = str_replace('/', '\\', substr($file, strlen($base) + 1, -4));
                 try {
                     $app->compiler->load($name);
                 } catch (\Throwable $e) {

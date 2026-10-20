@@ -97,10 +97,13 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
 
     public static function table(): string
     {
-        if (static::$table !== null) {
-            return static::$table;
-        }
-        $snake = self::snake(static::class);
+        return static::$table ?? self::tableFor(static::class);
+    }
+
+    /** Таблица по умолчанию для класса модели: Order даёт orders, Category даёт categories, TodoList даёт todo_lists. */
+    public static function tableFor(string $class): string
+    {
+        $snake = self::snake($class);
         return match (true) {
             (bool)preg_match('/[^aeiou]y$/', $snake) => substr($snake, 0, -1) . 'ies',
             (bool)preg_match('/(s|x|z|ch|sh)$/', $snake) => $snake . 'es',
