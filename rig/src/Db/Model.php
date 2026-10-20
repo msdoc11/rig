@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Rig\Db;
 
 use Rig\DB;
-use Rig\HttpError;
 
 /**
  * Модель: строка таблицы в виде объекта.
@@ -23,6 +22,7 @@ use Rig\HttpError;
  * Таблица по умолчанию: имя класса во множественном числе (Todo: todos, TodoList: todo_lists).
  * В состояние компонента модель кладётся массивом: $this->todos = Todo::all(), toArray() rig вызовет сам.
  *
+ * @method static Query with(string|array ...$relations)
  * @method static Query where(string|array|\Closure $column, mixed $op = null, mixed $value = null)
  * @method static Query whereIn(string $column, array $values)
  * @method static Query whereNull(string $column)
@@ -83,9 +83,10 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
         return static::query()->find($id, static::$primaryKey);
     }
 
+    /** Запись или RecordNotFound (в ответе на запрос это 404). */
     public static function findOrFail(int|string $id): static
     {
-        return static::find($id) ?? throw new HttpError(404, 'Запись не найдена');
+        return static::find($id) ?? throw new RecordNotFound(static::table());
     }
 
     public static function create(array $attributes): static
@@ -220,24 +221,149 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
 
     // ---------------------------------------------------------------- связи
 
+    /** Связи, загруженные через with(): имя => модель, список моделей или null. */
+    private array $relations = [];
+
+    /**
+     * Пока with() узнаёт, что за связь объявлена в методе, хелперы ниже не делают запрос,
+     * а записывают сюда тип и ключи: [тип, класс, внешний ключ, ключ].
+     */
+    private static bool $describing = false;
+    private static ?array $spec = null;
+
     /** Дочерние записи: $post->hasMany(Comment::class), связь comments.post_id = posts.id. */
     protected function hasMany(string $class, ?string $foreignKey = null, ?string $localKey = null): Query
     {
         $localKey ??= static::$primaryKey;
-        return $class::query()->where($foreignKey ?? $this->foreignKeyName(), $this->attributes[$localKey] ?? null);
+        $foreignKey ??= $this->foreignKeyName();
+        if (self::$describing) {
+            self::$spec = ['many', $class, $foreignKey, $localKey];
+            return $class::query();
+        }
+        return $class::query()->where($foreignKey, $this->attributes[$localKey] ?? null);
     }
 
     protected function hasOne(string $class, ?string $foreignKey = null, ?string $localKey = null): ?Model
     {
-        return $this->hasMany($class, $foreignKey, $localKey)->first();
+        $q = $this->hasMany($class, $foreignKey, $localKey);
+        if (self::$describing) {
+            self::$spec[0] = 'one';
+            return null;
+        }
+        return $q->first();
     }
 
     /** Родительская запись: $comment->belongsTo(Post::class), comments.post_id ссылается на posts.id. */
     protected function belongsTo(string $class, ?string $foreignKey = null, string $ownerKey = 'id'): ?Model
     {
         $foreignKey ??= self::snake($class) . '_id';
+        if (self::$describing) {
+            self::$spec = ['belongs', $class, $foreignKey, $ownerKey];
+            return null;
+        }
         $id = $this->attributes[$foreignKey] ?? null;
         return $id === null ? null : $class::query()->where($ownerKey, $id)->first();
+    }
+
+    /** Загружена ли связь через with(). */
+    public function relationLoaded(string $name): bool
+    {
+        return array_key_exists($name, $this->relations);
+    }
+
+    /**
+     * @internal Связи для списка моделей одного класса: один запрос whereIn на каждую связь.
+     * $with: ['author' => null, 'comments.author' => null, 'comments' => fn (Query $q) => …].
+     * @param list<Model> $models
+     */
+    public static function eagerLoad(array $models, array $with): void
+    {
+        if (!$models) {
+            return;
+        }
+        // 'comments.author' раскладываем в дерево: comments => вложенные [author]
+        $tree = [];
+        foreach ($with as $path => $constraint) {
+            $parts = explode('.', (string)$path);
+            $head = array_shift($parts);
+            $tree[$head] ??= ['constraint' => null, 'nested' => []];
+            if ($parts) {
+                $tree[$head]['nested'][implode('.', $parts)] = $constraint;
+            } else {
+                $tree[$head]['constraint'] = $constraint;
+            }
+        }
+        $class = get_class($models[0]);
+        foreach ($tree as $name => $opt) {
+            [$type, $related, $fk, $key, $base] = self::relationSpec($class, $name);
+            $q = $base ? clone $base : $related::query();
+            if ($type === 'belongs') {
+                // родитель: собираем внешние ключи детей, ищем родителей по ключу владельца
+                $ids = self::keys($models, $fk);
+                if ($opt['constraint']) {
+                    ($opt['constraint'])($q);
+                }
+                $byKey = [];
+                foreach ($ids ? $q->whereIn($key, $ids)->get() : [] as $r) {
+                    $byKey[(string)$r->attributes[$key]] = $r;
+                }
+                foreach ($models as $m) {
+                    $id = $m->attributes[$fk] ?? null;
+                    $m->relations[$name] = $id === null ? null : ($byKey[(string)$id] ?? null);
+                }
+                $loaded = array_values($byKey);
+            } else {
+                // дети: ищем по внешнему ключу среди ключей родителей и раскладываем по родителям
+                $ids = self::keys($models, $key);
+                if ($opt['constraint']) {
+                    ($opt['constraint'])($q);
+                }
+                $loaded = $ids ? $q->whereIn($fk, $ids)->get() : [];
+                $groups = [];
+                foreach ($loaded as $r) {
+                    $groups[(string)$r->attributes[$fk]][] = $r;
+                }
+                foreach ($models as $m) {
+                    $group = $groups[(string)($m->attributes[$key] ?? '')] ?? [];
+                    $m->relations[$name] = $type === 'one' ? ($group[0] ?? null) : $group;
+                }
+            }
+            if ($opt['nested'] && $loaded) {
+                self::eagerLoad($loaded, $opt['nested']);
+            }
+        }
+    }
+
+    /** Тип и ключи связи из метода модели, без запроса к базе. */
+    private static function relationSpec(string $class, string $name): array
+    {
+        if (!method_exists($class, $name)) {
+            throw new \InvalidArgumentException("with('{$name}'): у модели {$class} нет метода {$name}()");
+        }
+        self::$describing = true;
+        self::$spec = null;
+        try {
+            $returned = (new $class())->$name();
+        } finally {
+            self::$describing = false;
+        }
+        $spec = self::$spec ?? throw new \InvalidArgumentException("with('{$name}'): {$class}::{$name}() должен вернуть hasMany(), hasOne() или belongsTo()");
+        // hasMany(…)->where('done', false): условия из метода связи сохраняются и при жадной загрузке
+        $spec[4] = $returned instanceof Query ? $returned : null;
+        return $spec;
+    }
+
+    /** Непустые значения поля у списка моделей, без повторов. */
+    private static function keys(array $models, string $field): array
+    {
+        $ids = [];
+        foreach ($models as $m) {
+            $v = $m->attributes[$field] ?? null;
+            if ($v !== null) {
+                $ids[(string)$v] = $v;
+            }
+        }
+        return array_values($ids);
     }
 
     private function foreignKeyName(): string
@@ -254,8 +380,12 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
 
     // ---------------------------------------------------------------- поля
 
+    /** Поле записи или связь, загруженная через with(). */
     public function __get(string $name): mixed
     {
+        if (array_key_exists($name, $this->relations)) {
+            return $this->relations[$name];
+        }
         return $this->attributes[$name] ?? null;
     }
 
@@ -266,7 +396,7 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
 
     public function __isset(string $name): bool
     {
-        return isset($this->attributes[$name]);
+        return isset($this->relations[$name]) || isset($this->attributes[$name]);
     }
 
     public function __unset(string $name): void
@@ -276,12 +406,12 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
 
     public function offsetExists(mixed $offset): bool
     {
-        return isset($this->attributes[$offset]);
+        return $this->__isset((string)$offset);
     }
 
     public function offsetGet(mixed $offset): mixed
     {
-        return $this->attributes[$offset] ?? null;
+        return $this->__get((string)$offset);
     }
 
     public function offsetSet(mixed $offset, mixed $value): void
@@ -294,10 +424,18 @@ abstract class Model implements \JsonSerializable, \ArrayAccess
         unset($this->attributes[$offset]);
     }
 
-    /** Поля массивом, без $hidden. */
+    /** Поля массивом, без $hidden, вместе со связями из with(). */
     public function toArray(): array
     {
-        return array_diff_key($this->attributes, array_flip(static::$hidden));
+        $out = array_diff_key($this->attributes, array_flip(static::$hidden));
+        foreach ($this->relations as $name => $rel) {
+            $out[$name] = match (true) {
+                $rel instanceof self => $rel->toArray(),
+                is_array($rel) => array_map(static fn (self $m) => $m->toArray(), $rel),
+                default => null,
+            };
+        }
+        return $out;
     }
 
     public function jsonSerialize(): array

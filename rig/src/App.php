@@ -882,6 +882,9 @@ final class App
 
     private function fail(\Throwable $e, bool $json, bool $api = false): void
     {
+        if ($e instanceof Db\RecordNotFound) {
+            $e = new HttpError(404, $e->getMessage(), $e); // findOrFail() в странице, действии или API
+        }
         $status = $e instanceof HttpError ? $e->status : 500;
         if (!headers_sent()) {
             http_response_code($status);

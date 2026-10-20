@@ -7,8 +7,8 @@ namespace Rig;
 /** HTTP-ошибка с кодом ответа: throw new HttpError(403, 'Нет доступа') или abort(403). */
 class HttpError extends \RuntimeException
 {
-    public function __construct(public readonly int $status, string $message)
+    public function __construct(public readonly int $status, string $message, ?\Throwable $previous = null)
     {
-        parent::__construct($message);
+        parent::__construct($message, 0, $previous);
     }
 }

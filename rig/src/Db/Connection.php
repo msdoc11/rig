@@ -14,6 +14,8 @@ final class Connection
 {
     public readonly \PDO $pdo;
     public readonly string $driver;
+    /** Сколько запросов прошло через подключение: удобно ловить N+1, DB::connection()->queries. */
+    public int $queries = 0;
     private int $depth = 0;
 
     public function __construct(public readonly string $name, array $cfg)
@@ -127,6 +129,7 @@ final class Connection
 
     private function run(string $sql, array $bindings): \PDOStatement
     {
+        $this->queries++;
         $st = $this->pdo->prepare($sql);
         $i = 0;
         foreach ($bindings as $v) {

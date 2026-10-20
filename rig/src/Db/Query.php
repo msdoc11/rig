@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Rig\Db;
 
-use Rig\HttpError;
-
 /**
  * Конструктор запросов. Значения всегда уходят параметрами, поэтому SQL-инъекция через них невозможна.
  *
@@ -32,6 +30,8 @@ class Query
     private ?int $limit = null;
     private ?int $offset = null;
     private bool $distinct = false;
+    /** Связи для жадной загрузки: имя => условие или null. */
+    private array $with = [];
 
     /** @param class-string<Model>|null $model */
     public function __construct(
@@ -50,6 +50,32 @@ class Query
     public function distinct(): static
     {
         $this->distinct = true;
+        return $this;
+    }
+
+    /**
+     * Загрузить связи заранее, одним запросом на связь, чтобы не было N+1:
+     *
+     *   Post::with('author', 'comments.author')->get();
+     *   Post::with(['comments' => fn (Query $q) => $q->where('hidden', false)->latest()])->get();
+     *
+     * Связь читается свойством ($post->author) и попадает в toArray() и состояние компонента.
+     * Условие действует на весь запрос связи: limit(5) даст 5 комментариев на все посты, а не на каждый.
+     */
+    public function with(string|array ...$relations): static
+    {
+        if ($this->model === null) {
+            throw new \LogicException('with() работает только с моделями: Post::with(…), а не DB::table(…)');
+        }
+        foreach ($relations as $r) {
+            foreach ((array)$r as $k => $v) {
+                if (is_string($k)) {
+                    $this->with[$k] = $v;        // 'comments' => fn (Query $q) => …
+                } else {
+                    $this->with[(string)$v] = null;
+                }
+            }
+        }
         return $this;
     }
 
@@ -158,11 +184,15 @@ class Query
 
     // ---------------------------------------------------------------- чтение
 
-    /** @return list<array|Model> */
+    /** Модели, если запрос построен от модели, иначе массивы. @return list<array|Model> */
     public function get(): array
     {
         [$sql, $b] = $this->toSql();
-        return $this->hydrate($this->db->select($sql, $b));
+        $rows = $this->hydrate($this->db->select($sql, $b));
+        if ($this->with && $rows) {
+            Model::eagerLoad($rows, $this->with);
+        }
+        return $rows;
     }
 
     public function first(): array|Model|null
@@ -171,10 +201,10 @@ class Query
         return $rows[0] ?? null;
     }
 
-    /** Первая строка или 404. */
+    /** Первая строка или RecordNotFound (в ответе на запрос это 404). */
     public function firstOrFail(): array|Model
     {
-        return $this->first() ?? throw new HttpError(404, 'Запись не найдена');
+        return $this->first() ?? throw new RecordNotFound($this->table);
     }
 
     public function find(int|string $id, string $key = 'id'): array|Model|null
@@ -246,6 +276,7 @@ class Query
     /**
      * Страница результатов для списка с переключателем страниц:
      * ['items' => […], 'total' => 135, 'page' => 2, 'pages' => 7, 'perPage' => 20].
+     * В items то же, что вернул бы get(): модели или массивы. В состояние компонента модели можно класть как есть.
      */
     public function paginate(int $perPage = 20, int $page = 1): array
     {
@@ -255,7 +286,7 @@ class Query
         $page = min(max(1, $page), $pages);
         $items = (clone $this)->limit($perPage)->offset(($page - 1) * $perPage)->get();
         return [
-            'items' => array_map(static fn ($r) => $r instanceof Model ? $r->toArray() : $r, $items),
+            'items' => $items,
             'total' => $total,
             'page' => $page,
             'pages' => $pages,

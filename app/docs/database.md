@@ -31,7 +31,7 @@ DB::table('todos')->where('id', '>', 10)->whereIn('user_id', [1, 2])->count();
 DB::table('todos')->insert(['title' => 'Купить хлеб']);              // id новой строки
 DB::table('todos')->where('id', 5)->update(['done' => true]);
 DB::table('todos')->where('done', true)->delete();
-DB::table('todos')->orderBy('id')->paginate(20, $page);              // items, total, page, pages
+DB::table('todos')->orderBy('id')->paginate(20, $page);              // items, total, page, pages; items массивами
 
 DB::transaction(function () {
     // всё внутри — одной транзакцией: исключение откатывает изменения
@@ -61,8 +61,9 @@ $todo->done = true;
 $todo->save();
 
 Todo::find(5);
-Todo::findOrFail(5);                 // 404, если нет
+Todo::findOrFail(5);                 // RecordNotFound; на странице, в действии и API это ответ 404
 Todo::where('done', false)->orderBy('id')->get();
+Todo::where('done', false)->paginate(20, $page);   // в items модели, как у get()
 $todo->update(['title' => 'Купить молоко']);
 $todo->delete();
 ```
@@ -75,9 +76,56 @@ $todo->delete();
 | `$casts` | типы: `int`, `float`, `bool`, `string`, `array` (JSON в базе) |
 | `$timestamps` | `created_at` и `updated_at` заполняются сами |
 
-Связи: `$this->hasMany(Comment::class)`, `$this->belongsTo(User::class)`, `$this->hasOne(…)`.
-
 Модели можно класть в состояние компонента как есть, rig превратит их в массивы: `$this->todos = Todo::all()`.
+
+## Связи
+
+Связь описывается методом модели:
+
+```php
+final class Post extends Model
+{
+    public function author(): ?Model
+    {
+        return $this->belongsTo(User::class);          // posts.user_id ссылается на users.id
+    }
+
+    public function comments(): Query
+    {
+        return $this->hasMany(Comment::class);         // comments.post_id = posts.id
+    }
+
+    public function visibleComments(): Query
+    {
+        return $this->hasMany(Comment::class)->where('hidden', false);
+    }
+}
+```
+
+Вызов метода сразу делает запрос: `$post->author()` вернёт автора, `$post->comments()->count()` посчитает комментарии. Для одной записи это удобно. В цикле по списку получится запрос на каждую запись, то есть N+1.
+
+### Жадная загрузка: with()
+
+`with()` загружает связи для всего списка заранее, одним запросом на каждую связь:
+
+```php
+$posts = Post::with('author', 'comments.author')->latest()->get();   // 4 запроса на любое число постов
+
+foreach ($posts as $post) {
+    echo $post->author->name;                 // свойство, без запроса
+    foreach ($post->comments as $c) {
+        echo $c->author->name;
+    }
+}
+```
+
+- Загруженная связь читается свойством: `$post->author`, `$post->comments`. Метод `$post->author()` по-прежнему делает отдельный запрос.
+- Точка задаёт вложенную связь: `comments.author` загрузит комментарии и авторов комментариев.
+- Условие на связь передаётся функцией: `Post::with(['comments' => fn (Query $q) => $q->where('hidden', false)])`. Условия из самого метода связи, как в `visibleComments()`, тоже сохраняются.
+- Условие действует на весь запрос связи: `limit(5)` даст пять комментариев на все посты вместе, а не на каждый.
+- Загруженные связи попадают в `toArray()`, `json_encode()` и состояние компонента вложенными массивами, `$hidden` у связанной модели тоже соблюдается.
+
+Сколько запросов ушло, показывает `DB::connection()->queries`. Им удобно проверять в тестах, что N+1 не появился.
 
 ## Миграции
 

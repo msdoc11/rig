@@ -81,8 +81,52 @@ check('fillable: лишние поля не заполняются', (new TestUs
 check('belongsTo', $f->owner()?->email === 'a@b.c');
 check('hasMany', TestUser::find($uid)->todos()->count() === 3);
 check('json_encode модели', json_decode(json_encode($f), true)['title'] === 'Модель');
+
+// --- жадная загрузка связей: один запрос на связь вместо запроса на каждую запись
+$u3 = TestUser::create(['email' => 'n@n.n', 'password' => 'x']);
+Todo::create(['title' => 'Своя', 'user_id' => $u3->id]);
+Todo::create(['title' => 'Ничья']);
+$db = DB::connection();
+$before = $db->queries;
+$todos = Todo::with('owner')->orderBy('id')->get();
+check('with: belongsTo двумя запросами', $db->queries - $before === 2, $db->queries - $before);
+check('with: belongsTo раскладывается по записям', $todos[0]->owner?->email === 'a@b.c' && end($todos)->owner === null
+    && $todos[count($todos) - 2]->owner?->email === 'n@n.n');
+$before = $db->queries;
+$users = TestUser::with('todos.owner')->orderBy('id')->get();
+check('with: вложенная связь тремя запросами', $db->queries - $before === 3, $db->queries - $before);
+check('with: hasMany по родителям', count($users[0]->todos) === 3 && count($users[1]->todos) === 1
+    && $users[1]->todos[0]->owner->email === 'n@n.n');
+check('with: без запросов при чтении', (function () use ($db, $users) {
+    $before = $db->queries;
+    foreach ($users as $u) {
+        foreach ($u->todos as $todo) {
+            $todo->owner?->email;
+        }
+    }
+    return $db->queries === $before;
+})());
+$users = TestUser::with(['todos' => fn ($q) => $q->where('done', false)])->orderBy('id')->get();
+check('with: условие на связь', count($users[0]->todos) === 0 && count($users[1]->todos) === 1);
+$users = TestUser::with('openTodos', 'firstTodo')->orderBy('id')->get();
+check('with: условие из метода связи сохраняется', count($users[0]->openTodos) === 0 && $users[1]->openTodos[0]->title === 'Своя');
+check('with: hasOne', $users[1]->firstTodo?->title === 'Своя' && $users[0]->relationLoaded('firstTodo'));
+$arr = Todo::with('owner')->where('title', 'Своя')->first()->toArray();
+check('with: связь в toArray без скрытых полей', $arr['owner']['email'] === 'n@n.n' && !array_key_exists('password', $arr['owner']), $arr);
+check('with: неизвестная связь — понятная ошибка', throws(fn () => Todo::with('nope')->get(), 'нет метода nope'));
+check('with: только для моделей', throws(fn () => DB::table('todos')->with('owner'), 'только с моделями'));
+check('paginate модели отдаёт модели', Todo::query()->orderBy('id')->paginate(2)['items'][0] instanceof Todo);
+check('метод связи без with по-прежнему делает запрос', $u3->todos()->count() === 1 && Todo::where('title', 'Своя')->first()->owner()?->email === 'n@n.n');
+
 check('delete модели', $f->delete() && Todo::find($t->id) === null);
-check('findOrFail: 404', throws(fn () => Todo::findOrFail(999), 'не найдена'));
+check('findOrFail: RecordNotFound, а не HTTP', (function () {
+    try {
+        Todo::findOrFail(999);
+    } catch (Rig\Db\RecordNotFound $e) {
+        return $e->table === 'todos' && str_contains($e->getMessage(), 'не найдена');
+    }
+    return false;
+})());
 
 // миграции во временной папке проекта
 rrmdir("{$tmp}/database");

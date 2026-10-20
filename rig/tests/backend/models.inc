@@ -22,4 +22,15 @@ final class TestUser extends Model
     {
         return $this->hasMany(Todo::class, 'user_id');
     }
+
+    /** Связь с условием внутри метода: with() должен его сохранить. */
+    public function openTodos(): Rig\Db\Query
+    {
+        return $this->hasMany(Todo::class, 'user_id')->where('done', false);
+    }
+
+    public function firstTodo(): ?Model
+    {
+        return $this->hasOne(Todo::class, 'user_id');
+    }
 }
